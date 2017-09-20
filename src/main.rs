@@ -6,41 +6,35 @@ use std::error;
 use std::io::{self, Write};
 
 use gleam::gl;
-use glutin::GlContext;
 use webrender::api::*;
 
 fn window_event_loop() -> Result<(), Box<error::Error>> {
-    let mut events_loop = glutin::EventsLoop::new();
-
-    let window_builder = glutin::WindowBuilder::new()
+    let window = glutin::WindowBuilder::new()
+        .with_title("WebRender Sample App")
         .with_multitouch()
-        .with_visibility(false)
-        .with_title("Musique");
-
-    let context = glutin::ContextBuilder::new()
-        .with_vsync(true)
+        .with_vsync()
         .with_gl(glutin::GlRequest::GlThenGles {
                      opengl_version: (3, 2),
                      opengles_version: (3, 0),
-                 });
+                 })
+        .build()
+        .unwrap();
 
-    let gl_window = glutin::GlWindow::new(window_builder, context, &events_loop)?;
-
-    unsafe { gl_window.make_current().ok() };
+    unsafe { window.make_current().ok() };
 
     let gl = match gl::GlType::default() {
         gl::GlType::Gl => unsafe {
-            gl::GlFns::load_with(|symbol| gl_window.get_proc_address(symbol) as *const _)
+            gl::GlFns::load_with(|symbol| window.get_proc_address(symbol) as *const _)
         },
         gl::GlType::Gles => unsafe {
-            gl::GlesFns::load_with(|symbol| gl_window.get_proc_address(symbol) as *const _)
+            gl::GlesFns::load_with(|symbol| window.get_proc_address(symbol) as *const _)
         },
     };
 
-    let (width, height) = gl_window.get_inner_size_pixels().unwrap();
+    let (width, height) = window.get_inner_size_pixels().unwrap();
     let mut cursor_position = WorldPoint::zero();
     let mut window_size = DeviceUintSize::new(width, height);
-    let mut dpi_factor = gl_window.hidpi_factor();
+    let mut dpi_factor = window.hidpi_factor();
     let mut layout_size = LayoutSize::new((width as f32) / dpi_factor,
                                           (height as f32) / dpi_factor);
 
@@ -54,7 +48,7 @@ fn window_event_loop() -> Result<(), Box<error::Error>> {
     };
 
     let (mut renderer, sender) = webrender::Renderer::new(gl, opts).unwrap();
-    let notifier = Box::new(Notifier::new(events_loop.create_proxy()));
+    let notifier = Box::new(Notifier::new(window.create_window_proxy()));
     renderer.set_render_notifier(notifier);
 
     let api = sender.create_api();
@@ -81,76 +75,65 @@ fn window_event_loop() -> Result<(), Box<error::Error>> {
 
         renderer.update();
         renderer.render(window_size).unwrap();
-        gl_window.swap_buffers().unwrap();
-        gl_window.show();
+        window.swap_buffers().unwrap();
+
+        window.show();
     }
 
     let mut scroll_offset = LayoutPoint::zero();
     let root_clip = ClipId::new(1, root_pipeline_id);
 
-    events_loop.run_forever(|event| {
-        use glutin::WindowEvent::*;
+    'outer: for event in window.wait_events() {
+        let mut events = Vec::new();
+        events.push(event);
+
+        for event in window.poll_events() {
+            events.push(event);
+        }
 
         let mut set_window_parameters = false;
 
-        match event {
-            glutin::Event::WindowEvent { event, .. } => {
-                match event {
-                    Closed |
-                    KeyboardInput {
-                        input: glutin::KeyboardInput {
-                            virtual_keycode: Some(glutin::VirtualKeyCode::Escape), ..
-                        },
-                        ..
-                    } => return glutin::ControlFlow::Break,
-                    KeyboardInput {
-                        input: glutin::KeyboardInput {
-                            virtual_keycode: Some(glutin::VirtualKeyCode::D),
-                            state: glutin::ElementState::Pressed,
-                            ..
-                        },
-                        ..
-                    } => {
-                        let mut flags = renderer.get_debug_flags();
-                        flags.toggle(webrender::PROFILER_DBG);
-                        renderer.set_debug_flags(flags);
-                    }
-                    Moved(_, _) => {
-                        dpi_factor = gl_window.hidpi_factor();
-                        set_window_parameters = true;
-                    }
-                    Resized(w, h) => {
-                        window_size = DeviceUintSize::new(w, h);
-                        layout_size = LayoutSize::new((w as f32) / dpi_factor,
-                                                      (h as f32) / dpi_factor);
-                        set_window_parameters = true;
-                    }
-                    MouseMoved { position: (x, y), .. } => {
-                        cursor_position = WorldPoint::new((x as f32) / dpi_factor,
-                                                          (y as f32) / dpi_factor);
-                    }
-                    MouseWheel { delta, .. } => {
-                        const LINE_HEIGHT: f32 = 38.0;
-                        let (_, dy) = match delta {
-                            glutin::MouseScrollDelta::LineDelta(dx, dy) => (dx, dy * LINE_HEIGHT),
-                            glutin::MouseScrollDelta::PixelDelta(dx, dy) => (dx, dy),
-                        };
+        use glutin::Event::*;
+        use glutin::ElementState::*;
+        use glutin::MouseScrollDelta::*;
 
-                        scroll_offset += LayoutVector2D::new(0.0, -dy);
-                        if scroll_offset.y < 0.0 {
-                            scroll_offset.y = 0.0
-                        }
-
-                        scroll_offset.y = scroll_offset.y.round();
-                        api.scroll_node_with_id(root_document_id,
-                                                scroll_offset,
-                                                root_clip,
-                                                ScrollClamping::NoClamping);
-                    }
-                    _ => {}
+        for event in events {
+            match event {
+                Closed |
+                KeyboardInput(_, _, Some(glutin::VirtualKeyCode::Escape)) |
+                KeyboardInput(_, _, Some(glutin::VirtualKeyCode::Q)) => break 'outer,
+                KeyboardInput(Pressed, _, Some(glutin::VirtualKeyCode::D)) => {
+                    let mut flags = renderer.get_debug_flags();
+                    flags.toggle(webrender::PROFILER_DBG);
+                    renderer.set_debug_flags(flags);
                 }
+                Moved(_, _) => {
+                    dpi_factor = window.hidpi_factor();
+                    set_window_parameters = true;
+                }
+                Resized(w, h) => {
+                    window_size = DeviceUintSize::new(w, h);
+                    layout_size = LayoutSize::new((w as f32) / dpi_factor, (h as f32) / dpi_factor);
+                    set_window_parameters = true;
+                }
+                MouseMoved(x, y) => {
+                    cursor_position = WorldPoint::new((x as f32) / dpi_factor,
+                                                      (y as f32) / dpi_factor);
+                }
+                MouseWheel(PixelDelta(_, dy), _, _) => {
+                    scroll_offset += LayoutVector2D::new(0.0, -(dy as f32));
+                    if scroll_offset.y < 0.0 {
+                        scroll_offset.y = 0.0
+                    }
+
+                    scroll_offset.y = scroll_offset.y.round();
+                    api.scroll_node_with_id(root_document_id,
+                                            scroll_offset,
+                                            root_clip,
+                                            ScrollClamping::NoClamping);
+                }
+                _ => {}
             }
-            _ => {}
         }
 
         if set_window_parameters {
@@ -158,7 +141,7 @@ fn window_event_loop() -> Result<(), Box<error::Error>> {
                                       window_size,
                                       DeviceUintRect::new(DeviceUintPoint::zero(), window_size),
                                       dpi_factor);
-            gl_window.resize(window_size.width, window_size.height);
+            // window.set_inner_size(window_size.width, window_size.height);
         }
 
         let mut root_builder = DisplayListBuilder::new(root_pipeline_id, layout_size);
@@ -209,13 +192,21 @@ fn window_event_loop() -> Result<(), Box<error::Error>> {
         //                                        1.0));
         // }
 
-        for i in 0..512 {
-            let f = (i as f32) / 512.0;
-            let h = 6;
-            let p = 2;
+        for i in 0..32 {
+            let h = 35;
+            let p = 10;
+
+            let f = (i as f32) / 32.0;
             let rect = (0, i * h + p).to(layout_size.width as i32, (i + 1) * h);
             let info = LayoutPrimitiveInfo::new(rect);
-            root_builder.push_rect(&info, ColorF::new((1.0 - f), (1.0 - f), (1.0 - f), 1.0));
+
+            let color = if i % 2 == 0 {
+                ColorF::new(f, f, f, 1.0)
+            } else {
+                ColorF::new((1.0 - f), (1.0 - f), (1.0 - f), 1.0)
+            };
+
+            root_builder.push_rect(&info, color);
         }
 
         // ----------
@@ -234,10 +225,8 @@ fn window_event_loop() -> Result<(), Box<error::Error>> {
 
         renderer.update();
         renderer.render(window_size).unwrap();
-        gl_window.swap_buffers().unwrap();
-
-        glutin::ControlFlow::Continue
-    });
+        window.swap_buffers().unwrap();
+    }
 
     renderer.deinit();
 
@@ -255,11 +244,11 @@ fn main() {
 }
 
 struct Notifier {
-    window_proxy: glutin::EventsLoopProxy,
+    window_proxy: glutin::WindowProxy,
 }
 
 impl Notifier {
-    fn new(window_proxy: glutin::EventsLoopProxy) -> Notifier {
+    fn new(window_proxy: glutin::WindowProxy) -> Notifier {
         Notifier { window_proxy }
     }
 }
@@ -268,8 +257,7 @@ pub trait HandyDandyRectBuilder {
     fn to(&self, x2: i32, y2: i32) -> LayoutRect;
     fn by(&self, w: i32, h: i32) -> LayoutRect;
 }
-// Allows doing `(x, y).to(x2, y2)` or `(x, y).by(width, height)` with i32
-// values to build a f32 LayoutRect
+
 impl HandyDandyRectBuilder for (i32, i32) {
     fn to(&self, x2: i32, y2: i32) -> LayoutRect {
         LayoutRect::new(LayoutPoint::new(self.0 as f32, self.1 as f32),
@@ -296,12 +284,12 @@ impl HandyDandyRectBuilder for (f32, f32) {
 
 impl RenderNotifier for Notifier {
     fn new_frame_ready(&mut self) {
-        #[cfg(not(target_os = "android"))]
-        self.window_proxy.wakeup().unwrap();
+        // #[cfg(not(target_os = "android"))]
+        // self.window_proxy.wakeup_event_loop();
     }
 
     fn new_scroll_frame_ready(&mut self, _composite_needed: bool) {
-        #[cfg(not(target_os = "android"))]
-        self.window_proxy.wakeup().unwrap();
+        // #[cfg(not(target_os = "android"))]
+        // self.window_proxy.wakeup_event_loop();
     }
 }
