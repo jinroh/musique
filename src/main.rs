@@ -57,7 +57,7 @@ fn window_event_loop() -> Result<(), Box<error::Error>> {
     api.set_root_pipeline(root_document_id, root_pipeline_id);
 
     let epoch = Epoch(0);
-    let root_background_color = Some(ColorF::new(0.3, 0.0, 0.0, 1.0));
+    let root_background_color = Some(ColorF::new(0.7, 0.6, 0.1, 1.0));
 
     {
 
@@ -81,10 +81,17 @@ fn window_event_loop() -> Result<(), Box<error::Error>> {
     }
 
     let mut scroll_offset = LayoutPoint::zero();
+    let mut touch_start = (LayoutPoint::zero(), LayoutPoint::zero());
     let root_clip = ClipId::new(1, root_pipeline_id);
 
+
+    let mut events_queue = vec![];
+
     'outer: for event in window.wait_events() {
-        let mut events = Vec::new();
+        use std::mem;
+
+        let mut events = mem::replace(&mut events_queue, vec![]);
+
         events.push(event);
 
         for event in window.poll_events() {
@@ -92,6 +99,7 @@ fn window_event_loop() -> Result<(), Box<error::Error>> {
         }
 
         let mut set_window_parameters = false;
+        let mut set_root_scroll = false;
 
         use glutin::Event::*;
         use glutin::ElementState::*;
@@ -120,17 +128,33 @@ fn window_event_loop() -> Result<(), Box<error::Error>> {
                     cursor_position = WorldPoint::new((x as f32) / dpi_factor,
                                                       (y as f32) / dpi_factor);
                 }
-                MouseWheel(PixelDelta(_, dy), _, _) => {
+                MouseWheel(delta, _, _) => {
+                    const LINE_HEIGHT: f32 = 24.0;
+                    let dy = match delta {
+                        PixelDelta(_, dy) => dy,
+                        LineDelta(_, dy) => (dy * LINE_HEIGHT),
+                    };
+
                     scroll_offset += LayoutVector2D::new(0.0, -(dy as f32));
-                    if scroll_offset.y < 0.0 {
-                        scroll_offset.y = 0.0
+                    scroll_offset.y = scroll_offset.y.round();
+                    set_root_scroll = true;
+                }
+                Touch(glutin::Touch { location, phase, .. }) => {
+                    let touch_position = LayoutPoint::new(location.0 as f32, location.1 as f32);
+
+                    if phase == glutin::TouchPhase::Ended ||
+                       phase == glutin::TouchPhase::Cancelled {
+                        touch_start = (LayoutPoint::zero(), LayoutPoint::zero());
+                        break;
                     }
 
+                    if phase == glutin::TouchPhase::Started {
+                        touch_start = (scroll_offset, touch_position);
+                    }
+
+                    scroll_offset.y = touch_start.0.y + (touch_start.1.y - touch_position.y);
                     scroll_offset.y = scroll_offset.y.round();
-                    api.scroll_node_with_id(root_document_id,
-                                            scroll_offset,
-                                            root_clip,
-                                            ScrollClamping::NoClamping);
+                    set_root_scroll = true;
                 }
                 _ => {}
             }
@@ -142,6 +166,19 @@ fn window_event_loop() -> Result<(), Box<error::Error>> {
                                       DeviceUintRect::new(DeviceUintPoint::zero(), window_size),
                                       dpi_factor);
             // window.set_inner_size(window_size.width, window_size.height);
+        }
+
+        if set_root_scroll {
+            if scroll_offset.x < 0.0 {
+                scroll_offset.x = 0.0
+            }
+            if scroll_offset.y < 0.0 {
+                scroll_offset.y = 0.0
+            }
+            api.scroll_node_with_id(root_document_id,
+                                    scroll_offset,
+                                    root_clip,
+                                    ScrollClamping::NoClamping);
         }
 
         let mut root_builder = DisplayListBuilder::new(root_pipeline_id, layout_size);
@@ -170,34 +207,34 @@ fn window_event_loop() -> Result<(), Box<error::Error>> {
 
         // ----------
 
-        // for i in 0..256 {
-        //     let f = 1.0 - (i as f32) / 256.0;
-        //     let mut m = WorldPoint::new(cursor_position.x, cursor_position.y);
-        //     let c = (layout_size.width / 2.0, layout_size.height / 2.0);
-        //     if m.x > c.0 {
-        //         m.x = layout_size.width - m.x;
-        //     }
-        //     if m.y > c.1 {
-        //         m.y = layout_size.height - m.y;
-        //     }
-        //     let r = ((c.0 - (c.0 - m.x) * f) as i32, (c.1 - (c.1 - m.y) * f) as i32)
-        //         .to((c.0 + (c.0 - m.x) * f) as i32,
-        //             (c.1 + (c.1 - m.y) * f) as i32);
+        for i in 0..256 {
+            let f = 1.0 - (i as f32) / 256.0;
+            let mut m = WorldPoint::new(cursor_position.x, cursor_position.y);
+            let c = (layout_size.width / 2.0, layout_size.height / 2.0);
+            if m.x > c.0 {
+                m.x = layout_size.width - m.x;
+            }
+            if m.y > c.1 {
+                m.y = layout_size.height - m.y;
+            }
+            let r = ((c.0 - (c.0 - m.x) * f) as i32, (c.1 - (c.1 - m.y) * f) as i32)
+                .to((c.0 + (c.0 - m.x) * f) as i32,
+                    (c.1 + (c.1 - m.y) * f) as i32);
 
-        //     let info = LayoutPrimitiveInfo::new(r);
-        //     root_builder.push_rect(&info,
-        //                            ColorF::new(0.5 * (1.0 - f),
-        //                                        0.5 * (1.0 - f),
-        //                                        0.5 * (1.0 - f),
-        //                                        1.0));
-        // }
+            let info = LayoutPrimitiveInfo::new(r);
+            root_builder.push_rect(&info,
+                                   ColorF::new(0.5 * (1.0 - f),
+                                               0.5 * (1.0 - f),
+                                               0.5 * (1.0 - f),
+                                               1.0));
+        }
 
-        for i in 0..32 {
+        for i in 0..256 {
             let h = 35;
             let p = 10;
 
-            let f = (i as f32) / 32.0;
-            let rect = (0, i * h + p).to(layout_size.width as i32, (i + 1) * h);
+            let f = (i as f32) / 256.0;
+            let rect = (5, i * h + p).to(layout_size.width as i32 - 5, (i + 1) * h);
             let info = LayoutPrimitiveInfo::new(rect);
 
             let color = if i % 2 == 0 {
